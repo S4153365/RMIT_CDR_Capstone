@@ -1,0 +1,258 @@
+{
+  "_notes": [
+    "Single source of truth for CDR access control. Read by jobs/03_create_groups.py,",
+    "jobs/04_verify_rbac.py and jobs/05_fine_grained_controls.py. Do not edit grants or",
+    "policies directly in the notebooks.",
+    "",
+    "Seven roles, the final provisioned set (2026-10-28 team decision), one per Unity Catalog",
+    "control that the PoC has to demonstrate:",
+    "  cdr_admins                 all layers, full administration - SELECT + MODIFY, unmasked. The",
+    "                                              unrestricted baseline every other role is compared to.",
+    "  cdr_data_engineers         platform / pipeline engineering - read/write/build on all three",
+    "                                              layers, unmasked where operationally required.",
+    "                                              Engineering access without security administration.",
+    "  cdr_data_scientist         ML / data science - schema SELECT on silver only, direct and",
+    "                                              quasi identifiers masked. User-level separation:",
+    "                                              no gold access, no security administration.",
+    "  cdr_standard_researcher    column level   - schema grant on gold, identifiers arrive as NULL.",
+    "  cdr_researcher_psychiatry  row level      - same grant and posture as the standard researcher,",
+    "                                              but the row filter lets PSYCH rows through.",
+    "  cdr_pharmacy_analyst       table level    - no schema SELECT at all; SELECT on the tables",
+    "                                              carrying domain=pharmacy.",
+    "  cdr_external_researcher    table level, narrow - approved diagnostic tables only, direct",
+    "                                              identifiers masked per the final role matrix.",
+    "",
+    "Row level needs a contrast to be visible: cdr_standard_researcher (level 1) and",
+    "cdr_researcher_psychiatry (level 2) hold identical privileges, so the only difference in a",
+    "query result is the row filter. That is the demonstration.",
+    "",
+    "cdr_mortality_investigator was removed in the same decision. Consequence, accepted:",
+    "hl7_confidentiality = V_Very_Restricted data (deathtime) is now readable only by the",
+    "platform roles (cdr_admins, cdr_data_engineers); every research role receives NULL.",
+    "",
+    "IMPORTANT: 03_create_groups never revokes, so any grant groups removed from this catalog",
+    "already hold in the metastore survives this edit. Revoke or drop them in the account",
+    "console, or the catalog says seven while the metastore still says more.",
+    "",
+    "policy values: unmasked | masked | redacted",
+    "  unmasked : original value",
+    "  masked   : NULL",
+    "  redacted : placeholder (REDACTED / -1), used where the PDF says Redacted",
+    "schemas: privileges granted at schema level (ALL domains roles)",
+    "domains: ALL, or the gold 'domain' tag values this role may read",
+    "rls: level 3 = global, 2 = standard rows + cohort, 1 = standard rows only",
+    "rls.id_anchored_filters: the same cohort rule anchored on a key instead of a service column,",
+    "  for the gold tables that carry neither. Each filter body reads ONLY an rbac snapshot, never",
+    "  a gold table: Unity Catalog rejects a filter that references another table carrying a filter",
+    "  (UNSUPPORTED_NESTED_ROW_OR_COLUMN_ACCESS_POLICY) and takes the protected table offline. The",
+    "  snapshots (hadm_service_map, subject_service_map) are stale after a Gold rebuild and are",
+    "  refreshed by re-running jobs/05. Function names carry the anchor type because a row filter",
+    "  parameter has to match the column type: hadm_id is INT on nine gold facts and BIGINT on three.",
+    "",
+    "masking.masked_schemas: the schemas whose tagged columns carry enforced masks.",
+    "  Gold and silver. Silver identifiers are masked because a role whose policy says",
+    "  'masked' must not be able to read the raw identifier one schema down; the mask is",
+    "  the second layer behind the schema grant, not a substitute for it.",
+    "masking.deferred_columns: per schema, columns that are classified but deliberately not",
+    "  masked. Gold defers the join keys between facts; silver defers nothing.",
+    "masking.exempt_columns: per entry, the schema the exemption applies to."
+  ],
+  "catalog": "cdr_mimiciv",
+  "gold_schema": "gold",
+  "rls": {
+    "anchor_column_candidates": ["curr_service", "service", "service_name"],
+    "id_anchored_filters": {
+      "hadm": {
+        "kind": "hadm",
+        "label": "Admission-level",
+        "param": "target_hadm_id",
+        "anchor_column": "hadm_id",
+        "function_prefix": "rls_hadm_service_filter",
+        "cohort": "psychiatry",
+        "tables": ["fact_admission", "fact_diagnosis", "fact_icu_observation", "fact_icu_stay",
+                   "fact_lab", "fact_medication_administration", "fact_microbiology", "fact_order",
+                   "fact_prescription", "fact_procedure", "fact_transfer"],
+        "reads": [],
+        "map_table": "hadm_service_map",
+        "map_from": {
+          "output_column": "hadm_id",
+          "fact_table": "fact_service",
+          "fact_keys": ["current_service_key", "previous_service_key"],
+          "dim_table": "dim_service",
+          "dim_key": "service_key",
+          "service_column": "service"
+        }
+      },
+      "subject": {
+        "kind": "subject",
+        "label": "Subject-level",
+        "param": "target_subject_id",
+        "anchor_column": "subject_id",
+        "function_prefix": "rls_subject_service_filter",
+        "cohort": "psychiatry",
+        "tables": ["dim_patient"],
+        "map_table": "subject_service_map",
+        "map_from": {
+          "subject_table": "dim_patient",
+          "subject_join": "patient_key",
+          "output_column": "subject_id",
+          "fact_table": "fact_service",
+          "fact_key": "patient_key",
+          "fact_keys": ["current_service_key", "previous_service_key"],
+          "dim_table": "dim_service",
+          "dim_key": "service_key",
+          "service_column": "service"
+        }
+      }
+    },
+    "levels": {
+      "3": "Global - all rows",
+      "2": "Standard + cohort rows",
+      "1": "Standard rows only"
+    },
+    "cohorts": {
+      "psychiatry": {
+        "label": "Psychiatry",
+        "group": "cdr_researcher_psychiatry",
+        "values": ["PSYCH", "PSYCHIATRY"]
+      }
+    }
+  },
+  "masking": {
+    "masked_schemas": ["gold", "silver"],
+    "columns": {
+      "direct_identifier": {
+        "tag": "hipaa_identifiability",
+        "value": "phi_direct_identifier"
+      },
+      "phi_quasi_identifier": {
+        "tag": "hipaa_identifiability",
+        "value": "phi_quasi_identifier"
+      },
+      "hl7_vr": {
+        "tag": "hl7_confidentiality",
+        "value": "V_Very_Restricted"
+      }
+    },
+    "deferred_columns": {
+      "gold": ["hadm_id", "stay_id"],
+      "silver": []
+    },
+    "_deferred_note": "Per schema. In gold these are the join path between facts for researchers, so masking them would break joins for exactly the roles that are allowed to read the rows; the team decision on them is still outstanding. In silver nothing is deferred: they are read only through a schema grant, and a role whose policy says 'masked' must not see them raw.",
+    "exempt_columns": [
+      {
+        "schema": "gold",
+        "table": "dim_patient",
+        "column": "gender",
+        "reason": "Sex is required for cohort description and readmission/mortality analysis; on its own it cannot identify an individual in a de-identified extract."
+      },
+      {
+        "schema": "gold",
+        "table": "dim_patient",
+        "column": "anchor_age",
+        "reason": "Age banding is the primary confounder in every clinical analysis; MIMIC-IV already shifts dates and collapses 89+ to 91, so age alone is not identifying here."
+      }
+    ],
+    "_exempt_note": "Still tagged phi_quasi_identifier (the classification is true) but deliberately NOT masked: these columns stay readable for every catalog role. This is an accepted residual re-identification risk, not an oversight. Reported as EXEMPT by 05 and as a note by 04.",
+    "redaction": {
+      "int": "-1",
+      "bigint": "-1",
+      "smallint": "-1",
+      "string": "'REDACTED'"
+    }
+  },
+  "roles": {
+    "cdr_admins": {
+      "description": "Schema-level control: platform administration with SELECT + MODIFY on bronze, silver and gold, unmasked. Also the identity the build pipelines run as",
+      "schemas": {
+        "bronze": ["SELECT", "MODIFY"],
+        "silver": ["SELECT", "MODIFY"],
+        "gold": ["SELECT", "MODIFY"]
+      },
+      "domains": ["ALL"],
+      "policy": {
+        "direct_identifier": "unmasked",
+        "phi_quasi_identifier": "unmasked",
+        "de_identified": "unmasked",
+        "hl7_vr": "unmasked"
+      },
+      "rls": {"level": 3, "cohort": null}
+    },
+    "cdr_standard_researcher": {
+      "description": "Column-level control: granted the whole gold schema, so the only thing standing between this role and a raw identifier is the column mask",
+      "schemas": {"gold": ["SELECT"]},
+      "domains": ["ALL"],
+      "policy": {
+        "direct_identifier": "masked",
+        "phi_quasi_identifier": "masked",
+        "de_identified": "unmasked",
+        "hl7_vr": "masked"
+      },
+      "rls": {"level": 1, "cohort": null}
+    },
+    "cdr_researcher_psychiatry": {
+      "description": "Row-level control: identical grants and column posture to cdr_standard_researcher, so the only difference in the result set is the row filter",
+      "schemas": {"gold": ["SELECT"]},
+      "domains": ["ALL"],
+      "policy": {
+        "direct_identifier": "masked",
+        "phi_quasi_identifier": "masked",
+        "de_identified": "unmasked",
+        "hl7_vr": "masked"
+      },
+      "rls": {"level": 2, "cohort": "psychiatry"}
+    },
+    "cdr_pharmacy_analyst": {
+      "description": "Table-level control: no schema SELECT, only table SELECT on the tables tagged domain=pharmacy",
+      "schemas": {"gold": ["SELECT"]},
+      "domains": ["pharmacy"],
+      "policy": {
+        "direct_identifier": "masked",
+        "phi_quasi_identifier": "masked",
+        "de_identified": "unmasked",
+        "hl7_vr": "masked"
+      },
+      "rls": {"level": 1, "cohort": null}
+    },
+    "cdr_external_researcher": {
+      "description": "Table-level control, narrow: approved diagnostic tables only, direct identifiers masked per the final role matrix",
+      "schemas": {"gold": ["SELECT"]},
+      "domains": ["diagnostics"],
+      "policy": {
+        "direct_identifier": "masked",
+        "phi_quasi_identifier": "masked",
+        "de_identified": "unmasked",
+        "hl7_vr": "masked"
+      },
+      "rls": {"level": 1, "cohort": null}
+    },
+    "cdr_data_scientist": {
+      "description": "User-level separation: schema SELECT on silver only, direct and quasi identifiers masked. No gold access and no security administration; the full approved Silver population is the analytical surface",
+      "schemas": {"silver": ["SELECT"]},
+      "domains": ["ALL"],
+      "policy": {
+        "direct_identifier": "masked",
+        "phi_quasi_identifier": "masked",
+        "de_identified": "unmasked",
+        "hl7_vr": "masked"
+      },
+      "rls": {"level": 1, "cohort": null}
+    },
+    "cdr_data_engineers": {
+      "description": "Platform / pipeline engineering: read, write and build across bronze, silver and gold. Unmasked where operationally required, but without catalog administration - ownership, grants and governance changes stay with cdr_admins",
+      "schemas": {
+        "bronze": ["SELECT", "MODIFY"],
+        "silver": ["SELECT", "MODIFY"],
+        "gold": ["SELECT", "MODIFY"]
+      },
+      "domains": ["ALL"],
+      "policy": {
+        "direct_identifier": "unmasked",
+        "phi_quasi_identifier": "unmasked",
+        "de_identified": "unmasked",
+        "hl7_vr": "unmasked"
+      },
+      "rls": {"level": 3, "cohort": null}
+    }
+  }
+}
