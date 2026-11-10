@@ -45,9 +45,11 @@
     "  for the gold tables that carry neither. Each filter body reads ONLY an rbac snapshot, never",
     "  a gold table: Unity Catalog rejects a filter that references another table carrying a filter",
     "  (UNSUPPORTED_NESTED_ROW_OR_COLUMN_ACCESS_POLICY) and takes the protected table offline. The",
-    "  snapshots (hadm_service_map, subject_service_map) are stale after a Gold rebuild and are",
+    "  snapshots (hadm_service_map, subject_service_map, patient_service_map) are stale after a Gold",
+    "  rebuild and are refreshed by re-running jobs/05; order details are anchored at patient level.",
     "  refreshed by re-running jobs/05. Function names carry the anchor type because a row filter",
     "  parameter has to match the column type: hadm_id is INT on nine gold facts and BIGINT on three.",
+    "  patient_key is LONG and BIGINT is the resulting filter parameter type.",
     "",
     "masking.masked_schemas: the schemas whose tagged columns carry enforced masks.",
     "  Gold and silver. Silver identifiers are masked because a role whose policy says",
@@ -71,7 +73,7 @@
         "cohort": "psychiatry",
         "tables": ["fact_admission", "fact_diagnosis", "fact_icu_observation", "fact_icu_stay",
                    "fact_lab", "fact_medication_administration", "fact_microbiology", "fact_order",
-                   "fact_prescription", "fact_procedure", "fact_transfer"],
+                   "fact_prescription", "fact_procedure", "fact_service", "fact_transfer"],
         "reads": [],
         "map_table": "hadm_service_map",
         "map_from": {
@@ -96,6 +98,27 @@
           "subject_table": "dim_patient",
           "subject_join": "patient_key",
           "output_column": "subject_id",
+          "fact_table": "fact_service",
+          "fact_key": "patient_key",
+          "fact_keys": ["current_service_key", "previous_service_key"],
+          "dim_table": "dim_service",
+          "dim_key": "service_key",
+          "service_column": "service"
+        }
+      },
+      "patient": {
+        "kind": "subject",
+        "label": "Patient-key",
+        "param": "target_patient_key",
+        "anchor_column": "patient_key",
+        "function_prefix": "rls_patientkey_service_filter",
+        "cohort": "psychiatry",
+        "tables": ["fact_order_detail"],
+        "map_table": "patient_service_map",
+        "map_from": {
+          "subject_table": "dim_patient",
+          "subject_join": "patient_key",
+          "output_column": "patient_key",
           "fact_table": "fact_service",
           "fact_key": "patient_key",
           "fact_keys": ["current_service_key", "previous_service_key"],
@@ -256,3 +279,4 @@
     }
   }
 }
+
